@@ -2,6 +2,8 @@
 
 This is the code to run the OMEGA program presented in Freschlin et al. bioRxiv (2025). We provide example files and preliminary documentation on OMEGA options. We have not exhaustively tested this code. If you encounter any errors, please open an issue or submit a pull request.
 
+Thyerlab Qiyao Wei refactored the OMEGA program to generate a library of oligos for plasmid cloning with one gene in one pool. All the parameters are remained from the original version. See test run 
+
 ## Install OMEGA
 OMEGA can be run using the minimal conda environment provided with this code. Alternatively, you can open the `omega_colab.ipynb` notebook in Google Colab and run OMEGA there if there is an installation problem with the conda environment.
 
@@ -17,11 +19,16 @@ python ./code/omega.py genes --config configs/test_install.yml
 ```
 
 #### Test a full run
+##### Multiple genes per subpool
 The following includes commands for a simple library design using 7 subpools. Each subpool uses 50 junctions and is optimized 5 times - the best solution is chosen for fragment design. By default, it uses 1 CPU to optimize each subpool. The runtime varies significantly by system. To increase CPU usage, add `--njobs [N cpus]` after the `--config` argument. 
 ```
 python ./code/omega.py genes --config configs/genes_test.yml
 ```
-
+##### One gene per subpool
+The following includes commands for a simple library design of 3 genes into 3 subpools. Each subpool uses 50 junctions and is optimized 5 times - the best solution is chosen for fragment design. By default, it uses 1 CPU to optimize each subpool. The runtime varies significantly by system. To increase CPU usage, add `--njobs [N cpus]` after the `--config` argument. 
+```
+python ./code/omega.py one_gene_per_pool --config configs/genes_test_Qiyao.yml
+```
 ## Examples
 
 #### Optimize your own library
