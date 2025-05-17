@@ -129,7 +129,7 @@ class Library:
         ngenes_per_pool = (njunctions - len([self.upstream_bbsite, self.downstream_bbsite]) - len(self.other_used_sites)) // (self.estimate_nfrags() - 1)
         npools = ceil(len(self.genes) / ngenes_per_pool)
 
-        print(f"Target number of genes per pool: {ngenes_per_pool} genes assembled in {npools} pools.")
+        print(f"Maximal possible target number of genes per pool: {ngenes_per_pool} genes assembled in {npools} pools.")
         print(f"Genes are broken into {self.estimate_nfrags()} fragments.")
 
         # if not enough primers for estimated pools, raise error

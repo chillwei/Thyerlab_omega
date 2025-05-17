@@ -72,9 +72,8 @@ class PrimerIterator:
 
     def get_primers(self, df: pd.DataFrame, *enzymes):
         """Get list of primers that don't contain enzyme sequences
-        used during cloning. 
+        used during cloning.
         """
-        # Qiyao: Current num of primer pairs are not enough for our purpose. need to introduce the primer pool for DMS
         primers = []
         for _, row in df.iterrows():
             fwd_bad = dna_contains_seq(row.fwd_sequence, *[e.seq for e in enzymes])

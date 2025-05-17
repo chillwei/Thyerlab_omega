@@ -1,5 +1,6 @@
 """Design oligopool for scalable gene assembly."""
 
+import re
 import os
 from os.path import join, exists
 from typing import Optional, Union
@@ -14,7 +15,8 @@ from data_classes import Enzyme, EnzymeTypes, LigationDataOpt, define_ligation_d
 from library_classes import Library
 from junctions import optimize_junctions
 from Bio import SeqIO
-
+from Bio.Seq import Seq
+from helpers import clean_dna, unique_orthogonal
 
 def genes(
         input_seqs: str,
@@ -168,32 +170,7 @@ def genes(
             # print(pool[0].opt_trajectory)
             np.save(join(trajectory_dir, f'pool_{pool[0].name}_seed-{pool[2]}.npy'), np.array(pool[0].opt_trajectory))
 
-def split_fasta_by_gene(input_fasta_file, output_directory="individual_genes"):
-    """
-    Reads a multi-gene FASTA file and saves each gene to a separate FASTA file.
-
-    Args:
-        input_fasta_file (str): Path to the input FASTA file.
-        output_directory (str, optional): Directory to save individual FASTA files.
-            Defaults to "individual_genes".
-    """
-    if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
-
-    try:
-        for record in SeqIO.parse(input_fasta_file, "fasta"):
-            # Sanitize the filename.  Replace any non-alphanumeric character (except
-            # underscore, period, and hyphen) with an underscore.
-            filename = record.id.replace(" ", "_")
-            filename = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
-            output_filename = os.path.join(output_directory, f"{filename}.fasta")
-            SeqIO.write(record, output_filename, "fasta")
-            print(f"Saved gene '{record.id}' to '{output_filename}'")
-    except FileNotFoundError:
-        print(f"Error: Input FASTA file '{input_fasta_file}' not found.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
+# generate one gene per pool for plasmid cloning.
 def one_gene_per_pool(
         input_seqs: str,
         njunctions: int,
@@ -274,7 +251,6 @@ def one_gene_per_pool(
     print(f"Upstream backbone site: {upstream_bbsite}")
     print(f"Downstream backbone site: {downstream_bbsite}")
 
-
     #process one gene at a time, save one gene in one pool
     concat_lib_df = pd.DataFrame()
     concat_oligo_df = pd.DataFrame()
@@ -332,7 +308,7 @@ def one_gene_per_pool(
 
         pool_stats = pd.DataFrame.from_dict(
             [{
-                'pool':i,
+                'pool':  [gene.name for gene in p.genes][0],
                 'fidelity':fidelity,
                 'min_gene':p.min_gene_fidelity,
                 'min_site':p.min_site_fidelity,
@@ -358,22 +334,177 @@ def one_gene_per_pool(
                 # print(pool[0].opt_trajectory)
                 np.save(join(trajectory_dir, f'pool_{pool[0].name}_seed-{pool[2]}.npy'), np.array(pool[0].opt_trajectory))
 
-    concat_lib_df = pd.concat(optimize_lib_list)
-    concat_lib_df.to_csv(os.path.join(output_dir, 'optimization_results.csv'))
-    print(f"Finished optimization. Saved to {os.path.join(output_dir, 'optimization_results.csv')}")
-    concat_oligo_df = pd.concat(oligo_list)
-    concat_oligo_df.to_csv(os.path.join(output_dir, 'oligo_order.csv'))
-    print(f"Designed {len(oligo_list)} oligos. Saved to {os.path.join(output_dir, 'oligo_order.csv')}")
     concat_pool_stats_df = pd.concat(pool_stats_list)
-    concat_pool_stats_df.to_csv(join(output_dir, 'pool_stats.csv'))
+    final_pool_stats_df = _add_primers_info_df(concat_pool_stats_df, primers, True )
+    final_pool_stats_df.to_csv(join(output_dir, 'pool_stats.csv'))
     print(f"Pool-level statistics saved to {join(output_dir, 'pool_stats.csv')}")
     with open(join(output_dir, 'experiment_details.txt'), 'w') as f:
         f.write(ligation_data.experiment_information())
 
-    # add primers now in the final concatenated df
+    concat_lib_df = pd.concat(optimize_lib_list)
+    lib_column_order = ['gene_id', 'sequence', r'oligo_\d+',
+        'upstream_bbsite',	'downstream_bbsite',r'ggsite_\d+',
+        'fwd_primer','rev_primer','pool_id',
+        'fidelity',	'min_gene_fidelity','min_site_fidelity']
+    lib_df_sorted = organize_columns(concat_lib_df.copy(), lib_column_order)
+    final_lib_df = _add_primers_info_df(lib_df_sorted, primers, False )
+
+    concat_oligo_df = pd.concat(oligo_list)
+
+    oligo_columns = [col for col in final_lib_df.columns if re.match(r'oligo_\d+', col)]
+
+    opt_df , final_oligo_df = _finalize_oligo_to_df(final_lib_df, concat_oligo_df, oligo_len, assembly_enzyme)
+
+    opt_df.to_csv(os.path.join(output_dir, 'optimization_results.csv'))
+    print(f"Finished optimization. Saved to {os.path.join(output_dir, 'optimization_results.csv')}")
+    final_oligo_df.to_csv(os.path.join(output_dir, 'oligo_order.csv'))
+    print(f"Designed {len(final_oligo_df)} oligos. Saved to {os.path.join(output_dir, 'oligo_order.csv')}")
+
+# subfunction for one_gene_per_pool to split multiplegene.fasta into one gene per fasta
+def split_fasta_by_gene(input_fasta_file, output_directory="individual_genes"):
+    """
+    Reads a multi-gene FASTA file and saves each gene to a separate FASTA file.
+
+    Args:
+        input_fasta_file (str): Path to the input FASTA file.
+        output_directory (str, optional): Directory to save individual FASTA files.
+            Defaults to "individual_genes".
+    """
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    try:
+        for record in SeqIO.parse(input_fasta_file, "fasta"):
+            # Sanitize the filename.  Replace any non-alphanumeric character (except
+            # underscore, period, and hyphen) with an underscore.
+            filename = record.id.replace(" ", "_")
+            filename = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+            output_filename = os.path.join(output_directory, f"{filename}.fasta")
+            SeqIO.write(record, output_filename, "fasta")
+            print(f"Saved gene '{record.id}' to '{output_filename}'")
+    except FileNotFoundError:
+        print(f"Error: Input FASTA file '{input_fasta_file}' not found.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+# add primer sequence in the final synOligo sequence
+def _finalize_oligo_to_df(opt_df, oligo_df, oligo_len, enzyme):
+    """
+    Add amplification tag (for forward & reverse primer) and padding oligo sequence
+    at both 5' and 3' of the gene fragment carried restriction enzyme sites in dataframe opt_df and oligo_df, and return 2 new df
+
+    Padding oligo sequence will be added to make sure the final oligo length match the input synoligo len
+
+    Args:
+        opt_df (df): dataframe for 'optimization_results.csv' in which the oligo sequences did not contain primer binding regions and padding sequence
+                     The df contains columns of fwd and rev primer sequences
+        oligo_df (df): dataframe for 'oligo_order.csv' in which the oligo sequences did not contain primer binding regions and padding sequence
+        oligo_len (int): input of synoligo length
+        enzyme (class object): enzyme.name ; enzyme.seq ; enzyme.revc_seq (rev complement seq of enzyme seq)
+    """
+    df1 = opt_df.copy()
+    df2 = oligo_df.copy()
+    oligo_list = []
+    enzyme_forward = enzyme.seq
+    enzyme_reverse_complement = enzyme.revc_seq
+    oligo_columns = [col for col in opt_df.columns if re.match(r'oligo_\d+', col)]
+    for idx, row in opt_df.iterrows():
+        fprimer = row['fwd_primer']
+        rprimer = row['rev_primer']
+        for oligo_col in oligo_columns:
+            oligo = row[oligo_col]  # Access the value for the current 'oligo_n' column
+            if isinstance(oligo, str):
+                oligo_final = _add_primers_to_oligo(oligo_len, fprimer, rprimer,
+                    enzyme, oligo, True)
+                # doublecheck if there are extra restriction enzyme sites in the sequence
+                forward_count = oligo_final.count(enzyme_forward)
+                reverse_count = oligo_final.count(enzyme_reverse_complement)
+                df1.at[idx, oligo_col] = oligo_final
+                oligo_list.append(oligo_final)
+                if forward_count + reverse_count > 2:
+                    print('Extra restriction enzyme sites are found in row: ', idx, ', column', oligo_col)
+            else:
+                pass
+    df2['sequence'] = oligo_list
+
+    return df1,df2
 
 
+# add primers now in the final concatenated df
+def _add_primers_to_oligo(oligo_len, fprimer: str, rprimer: str,
+    enzyme,oligo, pad_oligo: bool = True) -> str:
+    """Return oligo with forward and reverse primers attached."""
+    #pylint: disable=unbalanced-tuple-unpacking
+    extra_space = oligo_len - len(fprimer) - len(rprimer) - len(oligo)
+    left, right = np.array_split(np.arange(extra_space), [extra_space//2])
 
+    if pad_oligo:
+        return "".join([fprimer,
+                            clean_dna(left.size, enzyme.seq).lower(),
+                            oligo,
+                            clean_dna(right.size, enzyme.seq).lower(),
+                            str(Seq(rprimer).reverse_complement())])
+
+    else:
+        return "".join([fprimer,
+                            oligo,
+                            str(Seq(rprimer).reverse_complement())])
+
+def _add_primers_info_df(df, primers, primer_name: bool = True ):
+    """
+    return a new dataframe in which the primer info (fwd/rev primer name and seq) will be added as new column
+    """
+    df1 = df.copy()
+    fw_primers_seq = [primers.primers[i][0].sequence for i in range(0, len(df))]
+    fw_primers_name = [primers.primers[i][0].name for i in range(0, len(df))]
+    rv_primers_seq = [primers.primers[i][1].sequence for i in range(0, len(df))]
+    rv_primers_name = [primers.primers[i][1].name for i in range(0, len(df))]
+    if primer_name:
+        df1['pfwd_name'] = fw_primers_name
+        df1['pfwd_sequence'] = fw_primers_seq
+        df1['prev_name'] = rv_primers_name
+       	df1['prev_sequence'] = rv_primers_seq
+        print('Finish adding primer name and seq in the pool_stats.csv')
+    else:
+        df1['fwd_primer'] = fw_primers_seq
+       	df1['rev_primer'] = rv_primers_seq
+        print('Finish adding primer seq in the opt_result.csv')
+    return df1
+
+def organize_columns(df, column_order):
+    """
+    Organizes the columns of a DataFrame based on a provided order,
+    handling regular expression patterns.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to organize.
+        column_order (list): A list of column names, which can include
+            regular expression patterns.
+
+    Returns:
+        pd.DataFrame: The DataFrame with columns organized as specified.
+    """
+    ordered_columns = []
+    for item in column_order:
+        if isinstance(item, str) and any(c in r'[]{}()\.?*+^$\|' for c in item): #check if the item is a string and contains regex special characters
+            # It's a regex pattern
+            matching_columns = [col for col in df.columns if re.match(item, col)]
+            ordered_columns.extend(matching_columns)
+        else:
+            # It's a literal column name
+            if item in df.columns:  #check if the column exists
+                ordered_columns.append(item)
+
+    # Add any remaining columns not already in ordered_columns
+    remaining_columns = [col for col in df.columns if col not in ordered_columns]
+    ordered_columns.extend(remaining_columns)
+
+    try:
+        df = df.reindex(ordered_columns, axis=1)
+        df = df.reset_index(drop=True)
+    except KeyError as e:
+        raise ValueError(f"One or more columns in column_order not found: {e}") from e
+    return df
 
 def junctions(
         set_size: int,
